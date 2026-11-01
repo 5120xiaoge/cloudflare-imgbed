@@ -11,9 +11,11 @@
  */
 
 import { HuggingFaceAPI } from '../../utils/storage/huggingfaceAPI.js';
+import { resolveFileType } from '../../utils/mimeTypes.js';
 import { fetchUploadConfig } from '../../utils/sysConfig.js';
 import { userAuthCheck, UnauthorizedResponse } from '../../utils/auth/userAuth.js';
-import { buildUniqueFileId, getUploadIp, isBlockedUploadIp, createResponse } from '../uploadTools.js';
+import { buildUniqueFileId, getUploadIp, isBlockedUploadIp, createResponse, checkUploadFormat } from '../uploadTools.js';
+import { resolveUploadExpiry } from '../../utils/fileExpiryService.js';
 
 export async function onRequestPost(context) {
     const { request, env } = context;
@@ -38,7 +40,7 @@ export async function onRequestPost(context) {
 
         const body = await request.json();
         const { fileSize, fileName, fileType, sha256, fileSample, channelName, uploadNameType, uploadFolder } = body;
-        const normalizedFileType = fileType || 'application/octet-stream';
+        const normalizedFileType = resolveFileType(fileName, fileType);
 
         if (!fileSize || !fileName || !sha256 || !fileSample) {
             return createResponse(JSON.stringify({
@@ -49,8 +51,19 @@ export async function onRequestPost(context) {
             });
         }
 
+        // 直传前校验有效期参数，避免文件已传到 HuggingFace 才在提交时被拒绝
+        const expiry = await resolveUploadExpiry(context);
+        if (expiry.error) {
+            return createResponse(JSON.stringify({ error: expiry.error }), {
+                status: 400,
+                headers: { 'Content-Type': 'application/json' }
+            });
+        }
+
         // 获取 HuggingFace 配置
         const uploadConfig = await fetchUploadConfig(env);
+        const formatError = checkUploadFormat(fileName, uploadConfig);
+        if (formatError) return formatError;
         const hfSettings = uploadConfig.huggingface;
 
         if (!hfSettings || !hfSettings.channels || hfSettings.channels.length === 0) {

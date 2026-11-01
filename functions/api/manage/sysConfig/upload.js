@@ -1,5 +1,8 @@
+import { normalizeFileExpiryConfig, validateFileExpiryConfig } from '../../../utils/fileExpiryHelpers.js';
+import { normalizeUploadFormatConfig, validateUploadFormatConfig } from '../../../utils/uploadFormat.js';
 import { getDatabase } from '../../../utils/databaseAdapter.js';
 import { normalizeWebDAVHeaders } from '../../../utils/storage/webdavAPI.js';
+import { normalizeS3UserAgent } from '../../../utils/storage/s3Client.js';
 
 export async function onRequest(context) {
     // 上传设置相关，GET方法读取设置，POST方法保存设置
@@ -29,6 +32,25 @@ export async function onRequest(context) {
     if (request.method === 'POST') {
         const body = await request.json()
         const settings = body
+        const oldSettings = await getUploadConfig(db, env);
+        const fileExpiry = validateFileExpiryConfig(settings.fileExpiry ?? oldSettings.fileExpiry);
+        if (fileExpiry.error) {
+            return new Response(fileExpiry.error, { status: 400 });
+        }
+        settings.fileExpiry = { ...fileExpiry.config, fixed: false };
+        const fileFormat = validateUploadFormatConfig(settings.fileFormat ?? oldSettings.fileFormat);
+        if (fileFormat.error) {
+            return new Response(fileFormat.error, { status: 400 });
+        }
+        settings.fileFormat = fileFormat.config;
+
+        try {
+            for (const channel of settings.s3?.channels || []) {
+                channel.userAgent = normalizeS3UserAgent(channel.userAgent);
+            }
+        } catch (error) {
+            return new Response(error.message, { status: 400 });
+        }
 
         // 写入数据库
         await db.put('manage@sysConfig@upload', JSON.stringify(settings))
@@ -148,6 +170,7 @@ export async function getUploadConfig(db, env) {
             endpoint: env.S3_ENDPOINT,
             pathStyle: env.S3_PATH_STYLE === 'true',
             cdnDomain: env.S3_CDN_DOMAIN || '',  // 可选的 CDN 域名
+            userAgent: env.S3_USER_AGENT || '',
             enabled: true,
             fixed: true,
         })
@@ -160,12 +183,14 @@ export async function getUploadConfig(db, env) {
                 s3Channels[0].enabled = s.enabled
                 s3Channels[0].quota = s.quota  // 保留容量限制配置
                 s3Channels[0].cdnDomain = s.cdnDomain  // 保留 CDN 域名配置
+                s3Channels[0].userAgent = s.userAgent ?? s3Channels[0].userAgent
             }
 
             continue
         }
         // id自增
         s.id = s3Channels.length + 1
+        s.userAgent = s.userAgent || ''
         s3Channels.push(s)
     }
 
@@ -322,6 +347,9 @@ export async function getUploadConfig(db, env) {
     settings.discord = discord
     settings.huggingface = huggingface
     settings.webdav = webdav
+
+    settings.fileExpiry = { ...normalizeFileExpiryConfig(settingsKV.fileExpiry), fixed: false };
+    settings.fileFormat = normalizeUploadFormatConfig(settingsKV.fileFormat);
 
     return settings;
 }

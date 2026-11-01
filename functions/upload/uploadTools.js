@@ -2,6 +2,21 @@ import { fetchSecurityConfig } from "../utils/sysConfig";
 import { purgeCFCache, purgeRandomFileListCache, purgePublicFileListCache } from "../utils/purgeCache";
 import { addFileToIndex } from "../utils/indexManager.js";
 import { getDatabase } from '../utils/databaseAdapter.js';
+import { resolveFileExt } from '../utils/mimeTypes.js';
+import { isUploadFormatAllowed } from '../utils/uploadFormat.js';
+import { autoTagUploadedFile } from '../utils/ai/uploadTags.js';
+export { isExtValid, resolveFileExt } from '../utils/mimeTypes.js';
+
+export function parseChunkCount(value, minimum = 1) {
+    if (typeof value !== 'number' && (typeof value !== 'string' || !/^\d+$/.test(value))) return null;
+    const count = Number(value);
+    return Number.isSafeInteger(count) && count >= minimum && count <= 10000 ? count : null;
+}
+
+export function parseChunkIndex(value, totalChunks) {
+    const index = parseChunkCount(value, 0);
+    return index !== null && index < totalChunks ? index : null;
+}
 
 // 统一的响应创建函数
 export function createResponse(body, options = {}) {
@@ -19,6 +34,22 @@ export function createResponse(body, options = {}) {
             ...options.headers
         }
     });
+}
+
+// 普通上传和分块合并共用成功响应格式，默认保留数组形式。
+export function createUploadResponse(context, results) {
+    const body = context.url.searchParams.get('responseFormat') === 'object' ? results[0] : results;
+    return createResponse(JSON.stringify(body), {
+        headers: { 'Content-Type': 'application/json' }
+    });
+}
+
+export function checkUploadFormat(fileName, uploadConfig) {
+    if (isUploadFormatAllowed(fileName, uploadConfig?.fileFormat)) return null;
+    return createResponse(JSON.stringify({
+        code: 'UPLOAD_FORMAT_NOT_ALLOWED',
+        error: 'This file format is not allowed for upload',
+    }), { status: 400, headers: { 'Content-Type': 'application/json' } });
 }
 
 // 生成短链接
@@ -170,36 +201,6 @@ export function sanitizeUploadFolder(folder) {
 
     return sanitizedSegments.join('/');
 }
-
-// 检查文件扩展名是否有效
-export function isExtValid(fileExt) {
-    return ['jpeg', 'jpg', 'png', 'gif', 'webp',
-        'mp4', 'mp3', 'ogg',
-        'mp3', 'wav', 'flac', 'aac', 'opus',
-        'doc', 'docx', 'ppt', 'pptx', 'xls', 'xlsx', 'pdf',
-        'txt', 'md', 'json', 'xml', 'html', 'css', 'js', 'ts', 'go', 'java', 'php', 'py', 'rb', 'sh', 'bat', 'cmd', 'ps1', 'psm1', 'psd', 'ai', 'sketch', 'fig', 'svg', 'eps', 'zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'apk', 'exe', 'msi', 'dmg', 'iso', 'torrent', 'webp', 'ico', 'svg', 'ttf', 'otf', 'woff', 'woff2', 'eot', 'apk', 'crx', 'xpi', 'deb', 'rpm', 'jar', 'war', 'ear', 'img', 'iso', 'vdi', 'ova', 'ovf', 'qcow2', 'vmdk', 'vhd', 'vhdx', 'pvm', 'dsk', 'hdd', 'bin', 'cue', 'mds', 'mdf', 'nrg', 'ccd', 'cif', 'c2d', 'daa', 'b6t', 'b5t', 'bwt', 'isz', 'isz', 'cdi', 'flp', 'uif', 'xdi', 'sdi'
-    ].includes(fileExt);
-}
-/**
- * 从文件名和文件类型中解析出有效的文件扩展名
- * @param {string} fileName - 文件名
- * @param {string} fileType - MIME 类型，如 'image/png'
- * @returns {string} 文件扩展名
- */
-export function resolveFileExt(fileName, fileType = 'application/octet-stream') {
-    let fileExt = fileName.split('.').pop();
-    if (fileExt && fileExt !== fileName && /^[a-zA-Z0-9]{1,16}$/.test(fileExt)) {
-        return fileExt.toLowerCase();
-    }
-    // 文件名中无有效扩展名，尝试从 MIME 类型中提取
-    const typePart = fileType.split('/').pop();
-    if (typePart && typePart !== fileType) {
-        return typePart;
-    }
-    return 'bin';
-}
-
-
 
 /**
  * 从图片文件头部提取尺寸信息
@@ -396,6 +397,9 @@ export async function endUpload(context, fileId, metadata) {
 
     // 更新文件索引（索引更新时会自动计算容量统计）
     await addFileToIndex(context, fileId, metadata);
+
+    // 自动标签属于上传后的后台增强任务，任何失败都不得改变上传结果。
+    await autoTagUploadedFile(context, fileId, metadata);
 }
 
 // 从 request 中解析 ip 地址

@@ -26,6 +26,9 @@ const HOP_BY_HOP_HEADERS = [
  */
 function createProxyHeaders(responseHeaders) {
     const headers = new Headers(responseHeaders);
+    headers.delete('set-cookie');
+    headers.set('Cache-Control', 'private, no-store');
+    headers.set('X-Content-Type-Options', 'nosniff');
 
     for (const name of HOP_BY_HOP_HEADERS) {
         headers.delete(name);
@@ -39,12 +42,18 @@ function createProxyHeaders(responseHeaders) {
     return headers;
 }
 
-function fetchTarget(url) {
-    const options = { redirect: 'manual' };
+async function fetchTarget(url) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    const options = { redirect: 'manual', signal: controller.signal };
     if (IS_NODE_RUNTIME) {
         options.headers = { 'Accept-Encoding': 'identity' };
     }
-    return fetch(url.toString(), options);
+    try {
+        return await fetch(url.toString(), options);
+    } finally {
+        clearTimeout(timeout);
+    }
 }
 
 /**
@@ -57,7 +66,7 @@ function fetchTarget(url) {
  */
 function isPrivateHostname(hostname) {
     if (!hostname) return true;
-    let h = hostname.toLowerCase();
+    let h = hostname.toLowerCase().replace(/\.$/, '');
     // Strip IPv6 brackets
     if (h.startsWith('[') && h.endsWith(']')) {
         h = h.slice(1, -1);
@@ -80,20 +89,27 @@ function isPrivateHostname(hostname) {
         if (a === 169 && b === 254) return true;                // link-local / AWS metadata 169.254.169.254
         if (a === 172 && b >= 16 && b <= 31) return true;       // 172.16.0.0/12
         if (a === 192 && b === 168) return true;                // 192.168.0.0/16
+        if (a === 192 && b === 0) return true;                  // special-purpose addresses
+        if (a === 198 && (b === 18 || b === 19)) return true;    // benchmark networks
         if (a === 100 && b >= 64 && b <= 127) return true;      // CGNAT 100.64.0.0/10
         if (a >= 224) return true;                              // multicast / reserved
         return false;
     }
 
-    // IPv6 literal check (basic)
+    // URL canonicalization converts mapped dotted IPv4 to hexadecimal IPv6.
     if (h.includes(':')) {
-        if (h === '::' || h === '::1') return true;
-        if (h.startsWith('fe80:') || h.startsWith('fe80::')) return true;   // link-local
-        if (h.startsWith('fc') || h.startsWith('fd')) return true;          // unique local fc00::/7
-        // IPv4-mapped IPv6 (::ffff:a.b.c.d)
-        const mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
-        if (mapped) return isPrivateHostname(mapped[1]);
-        return false;
+        const [left, right] = h.split('::');
+        const before = left ? left.split(':') : [];
+        const after = right ? right.split(':') : [];
+        const parts = right === undefined ? before : [...before, ...Array(8 - before.length - after.length).fill('0'), ...after];
+        if (parts.length !== 8) return true;
+        const words = parts.map(part => parseInt(part, 16));
+        if (words.slice(0, 5).every(word => word === 0) && words[5] === 0xffff) {
+            return isPrivateHostname(`${words[6] >> 8}.${words[6] & 255}.${words[7] >> 8}.${words[7] & 255}`);
+        }
+        // Only global unicast (2000::/3), excluding documentation addresses.
+        return (words[0] & 0xe000) !== 0x2000 ||
+            (words[0] === 0x2001 && (words[1] === 0xdb8 || words[1] === 2));
     }
 
     return false;
@@ -120,9 +136,17 @@ export async function onRequest(context) {
         });
     }
 
-    const jsonRequest = await request.json();
-    const targetUrl = jsonRequest.url;
-    if (targetUrl === undefined) {
+    if (request.method !== 'POST') {
+        return new Response('Method not allowed', { status: 405, headers: { Allow: 'POST' } });
+    }
+    let jsonRequest;
+    try {
+        jsonRequest = await request.json();
+    } catch {
+        return new Response('Invalid JSON', { status: 400 });
+    }
+    const targetUrl = jsonRequest?.url;
+    if (typeof targetUrl !== 'string' || !targetUrl.trim()) {
         return new Response('URL is required', { status: 400 })
     }
 
@@ -163,27 +187,36 @@ export async function onRequest(context) {
 
     // Follow redirects manually so a permitted host cannot redirect us onto
     // an internal address without re-validation.
-    let currentUrl = parsed;
-    let response = await fetchTarget(currentUrl);
-    let hops = 0;
-    while (response.status >= 300 && response.status < 400 && response.headers.get('location') && hops < 5) {
-        const next = new URL(response.headers.get('location'), currentUrl);
-        if ((next.protocol !== 'http:' && next.protocol !== 'https:') ||
-            next.username || next.password ||
-            isPrivateHostname(next.hostname)) {
-            return new Response(JSON.stringify({ error: 'Redirect to disallowed target' }), {
-                status: 400,
-                headers: { 'Content-Type': 'application/json' }
-            });
+    try {
+        let currentUrl = parsed;
+        let response = await fetchTarget(currentUrl);
+        let hops = 0;
+        while (response.status >= 300 && response.status < 400 && response.headers.get('location')) {
+            const location = response.headers.get('location');
+            try { await response.body?.cancel(); } catch {}
+            if (hops >= 5) {
+                return new Response('Too many redirects', { status: 502 });
+            }
+            const next = new URL(location, currentUrl);
+            if ((next.protocol !== 'http:' && next.protocol !== 'https:') ||
+                next.username || next.password ||
+                isPrivateHostname(next.hostname)) {
+                return new Response(JSON.stringify({ error: 'Redirect to disallowed target' }), {
+                    status: 400,
+                    headers: { 'Content-Type': 'application/json' }
+                });
+            }
+            currentUrl = next;
+            response = await fetchTarget(currentUrl);
+            hops++;
         }
-        currentUrl = next;
-        response = await fetchTarget(currentUrl);
-        hops++;
-    }
 
-    const headers = createProxyHeaders(response.headers);
-    return new Response(response.body, {
-        headers: headers,
-        status: response.status
-    })
+        const headers = createProxyHeaders(response.headers);
+        return new Response(response.body, { headers, status: response.status });
+    } catch {
+        return new Response(JSON.stringify({ error: 'Unable to fetch remote resource' }), {
+            status: 502,
+            headers: { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }
+        });
+    }
 }

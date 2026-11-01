@@ -159,7 +159,11 @@ function extractAuthCode(url, request) {
         const cookies = request.headers.get('Cookie');
         if (cookies) {
             const match = cookies.match(new RegExp('(^| )authCode=([^;]+)'));
-            authCode = match ? decodeURIComponent(match[2]) : null;
+            try {
+                authCode = match ? decodeURIComponent(match[2]) : null;
+            } catch {
+                authCode = null;
+            }
         }
     }
 

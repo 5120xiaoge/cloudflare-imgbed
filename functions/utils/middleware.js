@@ -3,29 +3,52 @@ import '@sentry/tracing';
 import { fetchOthersConfig } from "./sysConfig";
 import { checkDatabaseConfig as checkDbConfig } from './databaseAdapter.js';
 
-let disableTelemetry = false;
+function telemetryRequest(request) {
+  const url = new URL(request.url);
+  const parts = url.pathname.split('/').filter(Boolean);
+  const path = parts[0] === 'api'
+    ? `/api/${['manage', 'auth'].includes(parts[1]) ? parts[1] + '/*' : '*'}`
+    : `/${['upload', 'file', 'dav', 'random'].includes(parts[0]) ? parts[0] : '*'}/*`;
+  const headers = {};
+  for (const name of ['content-type', 'content-length']) {
+    if (request.headers.has(name)) headers[name] = request.headers.get(name);
+  }
+  return { headers, url: url.origin + path, method: request.method, path };
+}
+
+function sanitizeTelemetryEvent(event) {
+  if (event.request) {
+    const request = event.request;
+    let url;
+    try { url = telemetryRequest(new Request(request.url)).url; } catch {}
+    event.request = { method: request.method, url };
+  }
+  delete event.user;
+  delete event.breadcrumbs;
+  return event;
+}
 
 export async function errorHandling(context) {
   // 读取KV中的设置
   const othersConfig = await fetchOthersConfig(context.env);
-  disableTelemetry = !othersConfig.telemetry.enabled;
+  const disableTelemetry = !othersConfig.telemetry.enabled;
 
   const env = context.env;
   if (!disableTelemetry) {
     context.data.telemetry = true;
-    let remoteSampleRate = 0.001;
-    try {
-      const sampleRate = await fetchSampleRate(context)
-      //check if the sample rate is not null
-      if (sampleRate) {
-        remoteSampleRate = sampleRate;
-      }
-    } catch (e) { console.log(e) }
-    const sampleRate = env.sampleRate || remoteSampleRate;
+    // 直接使用本地配置，默认采样率为 100%，无需请求远程配置。
+    const configuredSampleRate = Number(env.sampleRate ?? 1);
+    const sampleRate = Number.isFinite(configuredSampleRate)
+      && configuredSampleRate >= 0 && configuredSampleRate <= 1
+      ? configuredSampleRate
+      : 1;
     return sentryPlugin({
       dsn: "https://44b7b443108ec6d298044b125ff89d28@o4507644548022272.ingest.us.sentry.io/4507644555100160",
       tracesSampleRate: sampleRate,
-    })(context);;
+      sendDefaultPii: false,
+      beforeSend: sanitizeTelemetryEvent,
+      beforeSendTransaction: sanitizeTelemetryEvent,
+    })(context);
   }
 
   return context.next();
@@ -34,53 +57,26 @@ export async function errorHandling(context) {
 export async function telemetryData(context) {
   // 读取KV中的设置
   const othersConfig = await fetchOthersConfig(context.env);
-  disableTelemetry = !othersConfig.telemetry.enabled;
+  const disableTelemetry = !othersConfig.telemetry.enabled;
   
-  if (!disableTelemetry) {
+  if (!disableTelemetry && context.data.sentry) {
+    let transaction;
     try {
-      const parsedHeaders = {};
-      context.request.headers.forEach((value, key) => {
-        parsedHeaders[key] = value
-        //check if the value is empty
-        if (value.length > 0) {
-          context.data.sentry.setTag(key, value);
-        }
-      });
-      const CF = JSON.parse(JSON.stringify(context.request.cf));
-      const parsedCF = {};
-      for (const key in CF) {
-        if (typeof CF[key] == "object") {
-          parsedCF[key] = JSON.stringify(CF[key]);
-        } else {
-          parsedCF[key] = CF[key];
-          if (CF[key].length > 0) {
-            context.data.sentry.setTag(key, CF[key]);
-          }
-        }
-      }
-      const data = {
-        headers: parsedHeaders,
-        cf: parsedCF,
-        url: context.request.url,
-        method: context.request.method,
-        redirect: context.request.redirect,
-      }
-      //get the url path
-      const urlPath = new URL(context.request.url).pathname;
-      const hostname = new URL(context.request.url).hostname;
-      context.data.sentry.setTag("path", urlPath);
+      const data = telemetryRequest(context.request);
+      context.data.sentry.setTag("path", data.path);
       context.data.sentry.setTag("url", data.url);
       context.data.sentry.setTag("method", context.request.method);
-      context.data.sentry.setTag("redirect", context.request.redirect);
       context.data.sentry.setContext("request", data);
-      const transaction = context.data.sentry.startTransaction({ name: `${context.request.method} ${hostname}` });
-      //add the transaction to the context
+      transaction = context.data.sentry.startTransaction({ name: `${context.request.method} ${data.path}` });
       context.data.transaction = transaction;
+    } catch {
+      console.warn('Request telemetry unavailable');
+    }
+    // Telemetry failure must never retry or hide a business operation.
+    try {
       return await context.next();
-    } catch (e) {
-      console.log(e);
     } finally {
-      context.data.transaction.finish();
+      try { transaction?.finish(); } catch { console.warn('Request telemetry could not finish'); }
     }
   }
 
@@ -89,7 +85,7 @@ export async function telemetryData(context) {
 
 export async function traceData(context, span, op, name) {
   const data = context.data
-  if (data.telemetry) {
+  if (data.telemetry && data.transaction) {
     if (span) {
       console.log("span finish")
       span.finish();
@@ -99,16 +95,6 @@ export async function traceData(context, span, op, name) {
         { op: op, name: name },
       );
     }
-  }
-}
-
-async function fetchSampleRate(context) {
-  const data = context.data
-  if (data.telemetry) {
-    const url = "https://frozen-sentinel.pages.dev/signal/sampleRate.json";
-    const response = await fetch(url);
-    const json = await response.json();
-    return json.rate;
   }
 }
 

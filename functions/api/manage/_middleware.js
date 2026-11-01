@@ -21,9 +21,11 @@ async function errorHandling(context) {
   try {
     return withDefaultCacheControl(await context.next());
   } catch (err) {
-    return new Response(`${err.message}\n${err.stack}`, {
+    console.error('Management request failed');
+    return new Response(JSON.stringify({ error: 'Internal server error' }), {
       status: 500,
       headers: {
+        'Content-Type': 'application/json',
         'Cache-Control': DEFAULT_MANAGE_CACHE_CONTROL,
       },
     });
@@ -47,14 +49,16 @@ function UnauthorizedException(reason) {
  * @param {string} pathname - 请求路径
  * @returns {string} 需要的权限类型
  */
-function extractRequiredPermission(pathname) {
-  const pathParts = pathname.toLowerCase().split('/');
-
-  if (pathParts.includes('delete')) {
+function extractRequiredPermission(pathname, searchParams) {
+  const path = pathname.toLowerCase().replace(/\/$/, '');
+  if (path === '/api/manage/list' &&
+      ['rebuild', 'merge-operations', 'delete-operations'].includes(searchParams.get('action'))) {
+    return 'manage';
+  }
+  if (path === '/api/manage/delete' || path.startsWith('/api/manage/delete/')) {
     return 'delete';
   }
-
-  if (pathParts.includes('list')) {
+  if (path === '/api/manage/list' || path.startsWith('/api/manage/list/') || path === '/api/manage/batch/list') {
     return 'list';
   }
 
@@ -79,8 +83,8 @@ async function authentication(context) {
     });
   }
 
-  const pathname = new URL(context.request.url).pathname;
-  const requiredPermission = extractRequiredPermission(pathname);
+  const url = new URL(context.request.url);
+  const requiredPermission = extractRequiredPermission(url.pathname, url.searchParams);
 
   const result = await authenticate({
     env: context.env,

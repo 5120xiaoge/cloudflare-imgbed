@@ -1,10 +1,12 @@
+import { createS3Client } from '../utils/storage/s3Client.js';
 /* ======= 客户端分块上传处理 ======= */
-import { createResponse, selectConsistentChannel, getUploadIp, getIPAddress, buildUniqueFileId, endUpload } from './uploadTools';
+import { createResponse, checkUploadFormat, selectConsistentChannel, getUploadIp, getIPAddress, buildUniqueFileId, endUpload, parseChunkCount, parseChunkIndex } from './uploadTools';
 import { TelegramAPI } from '../utils/storage/telegramAPI';
 import { DiscordAPI } from '../utils/storage/discordAPI';
-import { S3Client, CreateMultipartUploadCommand, UploadPartCommand, AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
+import { CreateMultipartUploadCommand, UploadPartCommand, AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
 import { getDatabase, checkDatabaseConfig } from '../utils/databaseAdapter.js';
 import { fetchPageConfig } from '../utils/sysConfig.js';
+import { resolveFileType } from '../utils/mimeTypes.js';
 
 // 初始化分块上传
 export async function initializeChunkedUpload(context) {
@@ -16,12 +18,15 @@ export async function initializeChunkedUpload(context) {
         const formdata = await request.formData();
 
         const originalFileName = formdata.get('originalFileName');
-        const originalFileType = formdata.get('originalFileType');
-        const totalChunks = parseInt(formdata.get('totalChunks'));
+        const originalFileType = resolveFileType(originalFileName, formdata.get('originalFileType'));
+        const totalChunks = parseChunkCount(formdata.get('totalChunks'));
 
         if (!originalFileName || !originalFileType || !totalChunks) {
             return createResponse('Error: Missing initialization parameters', { status: 400 });
         }
+
+        const formatError = checkUploadFormat(originalFileName, context.uploadConfig);
+        if (formatError) return formatError;
 
         // 生成唯一的 uploadId
         const timestamp = Date.now();
@@ -93,13 +98,13 @@ export async function handleChunkUpload(context) {
 
     try {
         const chunk = formdata.get('file');
-        const chunkIndex = parseInt(formdata.get('chunkIndex'));
-        const totalChunks = parseInt(formdata.get('totalChunks'));
+        const totalChunks = parseChunkCount(formdata.get('totalChunks'));
+        const chunkIndex = parseChunkIndex(formdata.get('chunkIndex'), totalChunks);
         const uploadId = formdata.get('uploadId');
         const originalFileName = formdata.get('originalFileName');
-        const originalFileType = formdata.get('originalFileType');
+        const originalFileType = resolveFileType(originalFileName, formdata.get('originalFileType'));
 
-        if (!chunk || chunkIndex === null || !totalChunks || !uploadId || !originalFileName || !originalFileType) {
+        if (!chunk || typeof chunk.arrayBuffer !== 'function' || chunkIndex === null || !totalChunks || !uploadId || !originalFileName || !originalFileType) {
             return createResponse('Error: Missing chunk upload parameters', { status: 400 });
         }
 
@@ -117,6 +122,9 @@ export async function handleChunkUpload(context) {
             sessionInfo.totalChunks !== totalChunks) {
             return createResponse('Error: Session parameters mismatch', { status: 400 });
         }
+
+        const formatError = checkUploadFormat(sessionInfo.originalFileName, context.uploadConfig);
+        if (formatError) return formatError;
 
         // 检查会话是否过期
         if (Date.now() > sessionInfo.expiresAt) {
@@ -180,9 +188,9 @@ export async function handleChunkUpload(context) {
 // 处理清理请求
 export async function handleCleanupRequest(context, uploadId, totalChunks) {
     try {
-        if (!uploadId) {
+        if (!uploadId || parseChunkCount(totalChunks, 0) === null) {
             return createResponse(JSON.stringify({
-                error: 'Missing uploadId parameter'
+                error: 'Invalid uploadId or totalChunks parameter'
             }), { status: 400, headers: { 'Content-Type': 'application/json' } });
         }
 
@@ -215,11 +223,12 @@ async function uploadChunkToStorageWithTimeout(context, chunkIndex, totalChunks,
     const db = getDatabase(env);
     const chunkKey = `chunk_${uploadId}_${chunkIndex.toString().padStart(3, '0')}`;
     const UPLOAD_TIMEOUT = 180000; // 3分钟超时
+    let timeout;
 
     try {
         // 设置超时 Promise
         const timeoutPromise = new Promise((_, reject) => {
-            setTimeout(() => reject(new Error('Upload timeout')), UPLOAD_TIMEOUT);
+            timeout = setTimeout(() => reject(new Error('Upload timeout')), UPLOAD_TIMEOUT);
         });
 
         // 执行实际上传
@@ -254,6 +263,8 @@ async function uploadChunkToStorageWithTimeout(context, chunkIndex, totalChunks,
         } catch (metaError) {
             console.error('Failed to save timeout/error metadata:', metaError);
         }
+    } finally {
+        clearTimeout(timeout);
     }
 }
 
@@ -383,7 +394,9 @@ async function uploadSingleChunkToR2Multipart(context, chunkData, chunkIndex, to
         if (chunkIndex === 0) {
             finalFileId = await buildUniqueFileId(context, originalFileName, originalFileType);
 
-            const multipartUpload = await R2DataBase.createMultipartUpload(finalFileId);
+            const multipartUpload = await R2DataBase.createMultipartUpload(finalFileId, {
+                httpMetadata: { contentType: originalFileType },
+            });
             const multipartInfo = {
                 uploadId: multipartUpload.uploadId,
                 key: finalFileId
@@ -475,14 +488,9 @@ async function uploadSingleChunkToS3Multipart(context, chunkData, chunkIndex, to
             return { success: false, error: 'No S3 channel provided' };
         }
 
-        const { endpoint, pathStyle, accessKeyId, secretAccessKey, bucketName, region } = s3Channel;
+        const { bucketName } = s3Channel;
 
-        const s3Client = new S3Client({
-            region: region || "auto",
-            endpoint,
-            credentials: { accessKeyId, secretAccessKey },
-            forcePathStyle: pathStyle
-        });
+        const s3Client = createS3Client(s3Channel);
 
         const multipartKey = `multipart_${uploadId}`;
 
@@ -859,7 +867,7 @@ async function retrySingleChunk(context, chunk, uploadChannel, maxRetries = 5, r
 
         const chunkData = chunkRecord.value;
         const originalFileName = chunkRecord.metadata?.originalFileName || 'unknown';
-        const originalFileType = chunkRecord.metadata?.originalFileType || 'application/octet-stream';
+        const originalFileType = resolveFileType(originalFileName, chunkRecord.metadata?.originalFileType);
         const uploadId = chunkRecord.metadata?.uploadId;
         const totalChunks = chunkRecord.metadata?.totalChunks || 1;
 
@@ -890,14 +898,20 @@ async function retrySingleChunk(context, chunk, uploadChannel, maxRetries = 5, r
                 return null;
             })();
 
+            let timeout;
             const timeoutPromise = new Promise((resolve) => {
-                setTimeout(() => resolve({
+                timeout = setTimeout(() => resolve({
                     success: false,
                     error: 'Retry timeout'
                 }), retryTimeout);
             });
 
-            const uploadResult = await Promise.race([retryPromise, timeoutPromise]);
+            let uploadResult;
+            try {
+                uploadResult = await Promise.race([retryPromise, timeoutPromise]);
+            } finally {
+                clearTimeout(timeout);
+            }
 
             if (uploadResult && uploadResult.success) {
                 // 更新状态为成功
@@ -999,14 +1013,9 @@ export async function cleanupFailedMultipartUploads(context, uploadId, uploadCha
             }
 
             if (s3Channel) {
-                const { endpoint, pathStyle, accessKeyId, secretAccessKey, bucketName, region } = s3Channel;
+                const { bucketName } = s3Channel;
 
-                const s3Client = new S3Client({
-                    region: region || "auto",
-                    endpoint,
-                    credentials: { accessKeyId, secretAccessKey },
-                    forcePathStyle: pathStyle
-                });
+                const s3Client = createS3Client(s3Channel);
 
                 await s3Client.send(new AbortMultipartUploadCommand({
                     Bucket: bucketName,
@@ -1279,6 +1288,9 @@ export async function uploadLargeFileToTelegram(context, file, fullId, metadata,
         const responseBody = [{ 'src': returnLink }];
         if (urlPrefix) {
             responseBody[0].publicUrl = `${urlPrefix.replace(/\/+$/, '')}/${fullId}`;
+        }
+        if (metadata.ExpiresAt) {
+            responseBody[0].expiresAt = metadata.ExpiresAt;
         }
 
         return createResponse(

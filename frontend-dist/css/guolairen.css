@@ -1,0 +1,290 @@
+.site-shortcuts {
+    --shortcut-size: 50px;
+    --shortcut-top: max(20px, env(safe-area-inset-top));
+    --shortcut-left: max(20px, env(safe-area-inset-left));
+}
+.site-shortcuts .site-music-link--fixed,
+.site-shortcuts .image-compress-button {
+    position: fixed;
+    top: var(--shortcut-top);
+    z-index: 100;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    box-sizing: border-box;
+    width: var(--shortcut-size);
+    height: var(--shortcut-size);
+    padding: 2px;
+    border: 0;
+    border-radius: 50%;
+    background: transparent;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, .12);
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease;
+}
+.site-shortcuts .site-music-link--fixed::before,
+.site-shortcuts .image-compress-button::before,
+.site-shortcuts .site-music-link--fixed::after,
+.site-shortcuts .image-compress-button::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    padding: 1.25px;
+    border-radius: inherit;
+    pointer-events: none;
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    animation: shortcut-ring-spin 8s linear infinite;
+}
+.site-shortcuts .site-music-link--fixed::before,
+.site-shortcuts .image-compress-button::before {
+    background: conic-gradient(from 0deg, #19c8b8, #73dcf1 18%, #19c8b833 30%,
+        #ed759f 46%, #f6cd76 60%, #ed759f33 72%, #19c8b8 100%);
+    opacity: .8;
+}
+.site-shortcuts .site-music-link--fixed::after,
+.site-shortcuts .image-compress-button::after {
+    padding: 1px;
+    background: conic-gradient(transparent 0deg 24deg, #c7ffef 25deg 28deg,
+        transparent 29deg 141deg, #ffe1a2 142deg 145deg,
+        transparent 146deg 256deg, #ffd4e5 257deg 260deg, transparent 261deg 360deg);
+    opacity: .85;
+    animation-duration: 5s;
+    animation-direction: reverse;
+}
+.site-shortcuts .image-compress-button::before {
+    animation-duration: 10s;
+    animation-direction: reverse;
+}
+.site-shortcuts .image-compress-button::after {
+    animation-duration: 6s;
+    animation-direction: normal;
+}
+.site-shortcuts .site-music-link--fixed {
+    left: var(--shortcut-left);
+}
+.site-shortcuts .image-compress-button {
+    left: calc(var(--shortcut-left) + var(--shortcut-size) + 12px);
+}
+.site-shortcuts .site-music-link--fixed img.logo {
+    position: static;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    border-radius: 50%;
+    transform: none;
+    filter: none;
+    opacity: 1;
+    animation: shortcut-spin 20s linear infinite;
+}
+.site-shortcuts .image-compress-button img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    animation: shortcut-spin 24s linear infinite reverse;
+}
+@media (hover: hover) and (pointer: fine) {
+    .site-shortcuts .site-music-link--fixed:hover,
+    .site-shortcuts .image-compress-button:hover {
+        transform: translateY(-2px) scale(1.04);
+        box-shadow: 0 5px 14px rgba(0, 0, 0, .18);
+    }
+    .site-shortcuts .site-music-link--fixed:hover img.logo,
+    .site-shortcuts .image-compress-button:hover img {
+        animation-play-state: paused;
+    }
+    .site-shortcuts .site-music-link--fixed:hover::before,
+    .site-shortcuts .site-music-link--fixed:hover::after,
+    .site-shortcuts .image-compress-button:hover::before,
+    .site-shortcuts .image-compress-button:hover::after {
+        animation-play-state: paused;
+    }
+}
+.site-shortcuts .site-music-link--fixed:active,
+.site-shortcuts .image-compress-button:active {
+    transform: scale(.96);
+}
+.site-shortcuts .site-music-link--fixed:focus img.logo,
+.site-shortcuts .image-compress-button:focus img {
+    animation-play-state: paused;
+}
+.site-shortcuts .site-music-link--fixed:focus::before,
+.site-shortcuts .site-music-link--fixed:focus::after,
+.site-shortcuts .image-compress-button:focus::before,
+.site-shortcuts .image-compress-button:focus::after {
+    animation-play-state: paused;
+}
+html.dark .site-shortcuts .site-music-link--fixed,
+html.dark .site-shortcuts .image-compress-button {
+    box-shadow: 0 3px 12px rgba(0, 0, 0, .3);
+}
+.site-shortcuts .site-music-link--fixed:focus-visible,
+.site-shortcuts .image-compress-button:focus-visible {
+    outline: 3px solid var(--el-color-primary, #409eff);
+    outline-offset: 3px;
+}
+@keyframes shortcut-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+@keyframes shortcut-ring-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+#app .page-footer .footer-copyright {
+    margin: 12px 16px;
+    text-align: center;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+#app .site-home-link {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 1px solid var(--glass-border, rgba(0, 0, 0, .12));
+    border-radius: 12px;
+    background: var(--glass-bg, rgba(255, 255, 255, .88));
+    color: var(--theme-toggle-color, #222629);
+    font-size: 21px;
+    text-decoration: none;
+    -webkit-tap-highlight-color: transparent;
+    transition: background-color .2s ease, border-color .2s ease;
+}
+#app .site-home-link svg {
+    width: 1.25em;
+    height: 1em;
+}
+#app .site-home-link--admin {
+    width: var(--admin-header-action-size, 32px);
+    height: var(--admin-header-action-size, 32px);
+    border: 0;
+    border-radius: 6px;
+    font-size: var(--admin-header-action-font-size, 20px);
+}
+#app .site-home-link:hover {
+    border-color: var(--el-color-primary, #409eff);
+    color: var(--el-color-primary, #409eff);
+}
+#app .site-home-link:focus-visible {
+    outline: 2px solid var(--el-color-primary, #409eff);
+    outline-offset: 3px;
+}
+#app .site-home-link--frontend {
+    position: fixed;
+    top: 30px;
+    right: max(30px, env(safe-area-inset-right));
+    z-index: 102;
+}
+#app .login .site-home-link--frontend {
+    width: calc(2.5rem + 2px);
+    height: calc(2.5rem + 2px);
+    right: 130px;
+    font-size: 24px;
+}
+#app .upload-home .more-dropdown {
+    right: 80px;
+}
+#app .upload-home .toggle-dark-button {
+    right: 130px;
+}
+#app .upload-home .upload-method-button {
+    right: 180px;
+}
+#app .upload-home .upload-folder-container {
+    right: 230px;
+}
+@media (max-width: 768px) {
+    .site-shortcuts {
+        --shortcut-size: 44px;
+        --shortcut-top: max(16px, env(safe-area-inset-top));
+        --shortcut-left: max(12px, env(safe-area-inset-left));
+    }
+    .site-shortcuts .image-compress-button {
+        left: calc(var(--shortcut-left) + var(--shortcut-size) + 8px);
+    }
+    #app .site-home-link--frontend {
+        width: 32px;
+        height: 32px;
+        font-size: 17.5px;
+    }
+    #app .site-home-link--frontend {
+        top: max(30px, env(safe-area-inset-top));
+        right: max(18px, env(safe-area-inset-right));
+    }
+    #app .login .site-home-link--frontend {
+        width: calc(2rem + 2px);
+        height: calc(2rem + 2px);
+        right: 130px;
+        font-size: 24px;
+    }
+    #app .upload-home .mobile-more-dropdown {
+        top: max(30px, env(safe-area-inset-top));
+        right: calc(max(18px, env(safe-area-inset-right)) + 40px);
+    }
+    #app .upload-home .upload-folder-container {
+        top: max(30px, env(safe-area-inset-top));
+        right: calc(max(18px, env(safe-area-inset-right)) + 80px);
+    }
+    #app .upload-home .upload-folder,
+    #app .upload-home .upload-folder.active {
+        width: clamp(60px, calc(100vw - 256px - env(safe-area-inset-left) - env(safe-area-inset-right)), 80px);
+        flex: 0 0 auto;
+    }
+    #app .upload-home .directory-tree-trigger {
+        margin-left: 8px;
+        flex: 0 0 auto;
+    }
+}
+@media (max-width: 360px) {
+    #app .upload-home .upload-folder .el-input__wrapper {
+        padding: 0 6px;
+    }
+    #app .upload-home .upload-folder .el-input__inner {
+        font-size: 12px;
+    }
+}
+@media (prefers-reduced-motion: reduce) {
+    .site-shortcuts .site-music-link--fixed,
+    .site-shortcuts .image-compress-button {
+        transition: none;
+    }
+    #app .site-home-link {
+        transition: none;
+    }
+    .site-shortcuts .site-music-link--fixed img.logo,
+    .site-shortcuts .image-compress-button img {
+        animation: none;
+    }
+    .site-shortcuts .site-music-link--fixed::before,
+    .site-shortcuts .image-compress-button::before,
+    .site-shortcuts .site-music-link--fixed::after,
+    .site-shortcuts .image-compress-button::after {
+        animation: none;
+    }
+}
+@media (max-height: 600px) {
+    #app .login[data-v-381b66b0] {
+        display: block;
+        padding-top: max(84px, calc(env(safe-area-inset-top) + 68px));
+        padding-bottom: 20px;
+    }
+    #app .login[data-v-381b66b0] .login-container {
+        margin: 0 auto;
+        max-width: calc(100% - 32px);
+    }
+    #app .login[data-v-381b66b0] .footer {
+        position: static;
+        width: 100%;
+        margin-top: 16px;
+    }
+}
